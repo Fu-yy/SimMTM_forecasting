@@ -53,6 +53,12 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+outputs/checkpoints/
+outputs/checkpoints
+outputs/pretrain_checkpoints/
+outputs/pretrain_checkpoints
+outputs/logs/
+outputs/logs
 
 # Translations
 *.mo
