@@ -1,0 +1,232 @@
+from einops import rearrange, repeat
+from vmdpy import VMD
+from joblib import Parallel, delayed
+class vmd_router(nn.Module):
+    def __init__(self,mode_num=2,device='cuda:0',seq_len=32,factor=1,dropout=0.1,d_model=64,n_heads=4,d_ff=64):
+        super(vmd_router, self).__init__()
+        self.mode_num = mode_num
+        self.device = device
+        # seq_len = 96
+        self.factor = factor
+        self.dropout = dropout
+        self.dropout_layer = nn.Dropout(dropout)
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.seq_len = seq_len
+        self.d_ff = d_ff
+        self.router = nn.Parameter(torch.randn(1, self.seq_len, self.d_model))
+        self.dim_sender = AttentionLayer(FullAttention(False, self.factor, attention_dropout=self.dropout,
+                                                       output_attention=False), d_model, n_heads)
+        self.dim_receiver = AttentionLayer(FullAttention(False, self.factor, attention_dropout=self.dropout,output_attention=False), d_model, n_heads)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+        self.norm4 = nn.LayerNorm(d_model)
+
+        self.MLP1 = nn.Sequential(nn.Linear(d_model, d_ff),
+                                  nn.GELU(),
+                                  nn.Linear(d_ff, d_model))
+        self.MLP2 = nn.Sequential(nn.Linear(d_model, d_ff),
+                                  nn.GELU(),
+                                  nn.Linear(d_ff, d_model))
+
+        self.down_dim = nn.Linear(d_model, 1)
+        self.up_dim = nn.Linear(1, d_model)
+
+        self.embed_forx = nn.Linear(1,d_model)
+        self.deembed_forx = nn.Linear(d_model,1)
+
+
+    def vmd_decompose_torch(self,signal, alpha=2000, tau=0, K=3, DC=0, init=1, tol=1e-7):
+        """
+        对单变量信号进行VMD分解（使用PyTorch张量）
+        :param signal: 输入的一维信号 (seqlen,)
+        :param alpha: 惩罚项强度，默认2000
+        :param tau: 噪声容忍度，默认0
+        :param K: 模态数量
+        :param DC: 是否保留DC分量，默认0
+        :param init: 初始化模式，1为随机，2为零
+        :param tol: 收敛阈值
+        :return: 分解后的模态张量 (K, seqlen)
+        """
+        # 将信号从 Torch 转换为 Numpy
+        signal_np = signal.detach().cpu().numpy()
+
+        # 使用 pyvmd 进行分解
+        u, _, _ = VMD(signal_np, alpha, tau, K, DC, init, tol)
+
+        # 将结果转换回 Torch
+        return torch.tensor(u, dtype=torch.float32)
+
+    def process_batch(self,batch_idx, router_down, mode_num, nvar):
+        batch_results = []  # 存储当前批次的变量分解结果
+        for var in range(nvar):
+            signal = router_down[batch_idx, :, var]  # 提取当前变量的时间序列
+            modes = self.vmd_decompose_torch(signal, K=mode_num)  # VMD分解，返回形状 (K, seqlen)
+            batch_results.append(modes)
+        # 将当前 batch 的变量结果堆叠 (K, seqlen, nvar)
+        return torch.stack(batch_results, dim=-1)  # 堆叠变量
+    def forward(self, x):
+        batchsize_x, seqlen_x, nvar_x = x.size()
+        x_embed = rearrange(x, 'b seq_len nvar -> (b nvar) seq_len 1', b=batchsize_x)
+        x_embed = self.embed_forx(x_embed)
+        b_nvar,seqlen,dim = x_embed.size()
+        batch_router = repeat(self.router, 'seg_num seq_len d_model -> (repeat seg_num) seq_len d_model', repeat=b_nvar) #8 1 64--》 256 1 64
+
+        dim_buffer, attn = self.dim_sender(batch_router, x_embed, x_embed, attn_mask=None, tau=None, delta=None)
+
+        router_down = self.down_dim(dim_buffer)
+
+
+        b,len,nvar = router_down.size()
+        # vmd_results = []
+        # for batch in range(b):
+        #     batch_results = []  # 存储当前批次的变量分解结果
+        #     for var in range(nvar):
+        #         signal = router_down[batch, :, var]  # 提取当前变量的时间序列
+        #         modes = self.vmd_decompose_torch(signal, K=self.mode_num)  # VMD分解，返回形状 (K, seqlen)
+        #         batch_results.append(modes)
+        #     # 将当前 batch 的变量结果堆叠 (K, seqlen, nvar)
+        #     batch_results = torch.stack(batch_results, dim=-1)  # 堆叠变量
+        #     vmd_results.append(batch_results)
+
+
+        vmd_results = Parallel(n_jobs=8)(delayed(self.process_batch)(batch_idx, router_down, self.mode_num, nvar)for batch_idx in range(b))
+        # 将所有 batch 的结果堆叠，形状为 (batchsize, K, seqlen, nvar)
+        vmd_results = torch.stack(vmd_results, dim=0)
+        vmd_results.to(self.device)
+        vmd_results = vmd_results.permute(1, 0, 2, 3).contiguous()
+        router_up = self.up_dim(vmd_results) # model_num,b,seqlen,dim
+        mode_att_res = []
+        for mode_i in range(router_up.size(0)):
+            mode_router = router_up[mode_i,:,:,:]
+            dim_receive, attn = self.dim_receiver(x_embed, mode_router, mode_router, attn_mask=None, tau=None,delta=None)  # 256 7 64
+
+            dim_enc = x_embed + self.dropout_layer(dim_receive)
+            dim_enc = self.norm3(dim_enc)
+            dim_enc = dim_enc + self.dropout_layer(self.MLP2(dim_enc))
+            dim_enc = self.norm4(dim_enc)
+            dim_enc = rearrange(dim_enc, '(b nvar) seq_len dim -> b nvar seq_len dim', b=batchsize_x)
+            deembed = self.deembed_forx(dim_enc).squeeze(-1)
+            deembed = deembed.permute(0,2,1).contiguous()
+
+
+            mode_att_res.append(deembed)
+
+        return mode_att_res
+
+
+
+
+class vmd_decomp_withcuda(nn.Module):
+    def __init__(self,mode_num=2,device='cuda:0'):
+        super(vmd_decomp_withcuda, self).__init__()
+        self.mode_num = mode_num
+        self.device = device
+    def vmd_decompose_torch(self,signal, alpha=2000, tau=0, K=3, DC=0, init=1, tol=1e-7):
+        """
+        对单变量信号进行VMD分解（使用PyTorch张量）
+        :param signal: 输入的一维信号 (seqlen,)
+        :param alpha: 惩罚项强度，默认2000
+        :param tau: 噪声容忍度，默认0
+        :param K: 模态数量
+        :param DC: 是否保留DC分量，默认0
+        :param init: 初始化模式，1为随机，2为零
+        :param tol: 收敛阈值
+        :return: 分解后的模态张量 (K, seqlen)
+        """
+        # 将信号从 Torch 转换为 Numpy
+        signal_np = signal.detach().cpu().numpy()
+
+        # 使用 pyvmd 进行分解
+        u, _, _ = VMD(signal_np, alpha, tau, K, DC, init, tol)
+
+        # 将结果转换回 Torch
+        return torch.tensor(u, dtype=torch.float32)
+
+    def process_batch(self,batch_idx, router_down, mode_num, nvar):
+        batch_results = []  # 存储当前批次的变量分解结果
+        for var in range(nvar):
+            signal = router_down[batch_idx, :, var]  # 提取当前变量的时间序列
+            modes = self.vmd_decompose_torch(signal, K=mode_num)  # VMD分解，返回形状 (K, seqlen)
+            batch_results.append(modes)
+        # 将当前 batch 的变量结果堆叠 (K, seqlen, nvar)
+        return torch.stack(batch_results, dim=-1)  # 堆叠变量
+    def forward(self, x):
+        batchsize_x, seqlen_x, nvar_x = x.size()
+
+        # vmd_results = []
+        # for batch in range(b):
+        #     batch_results = []  # 存储当前批次的变量分解结果
+        #     for var in range(nvar):
+        #         signal = router_down[batch, :, var]  # 提取当前变量的时间序列
+        #         modes = self.vmd_decompose_torch(signal, K=self.mode_num)  # VMD分解，返回形状 (K, seqlen)
+        #         batch_results.append(modes)
+        #     # 将当前 batch 的变量结果堆叠 (K, seqlen, nvar)
+        #     batch_results = torch.stack(batch_results, dim=-1)  # 堆叠变量
+        #     vmd_results.append(batch_results)
+
+
+        vmd_results = Parallel(n_jobs=2)(delayed(self.process_batch)(batch_idx, x, self.mode_num, nvar_x)for batch_idx in range(batchsize_x))
+        # 将所有 batch 的结果堆叠，形状为 (batchsize, K, seqlen, nvar)
+        vmd_results = torch.stack(vmd_results, dim=0)
+        vmd_results.to(self.device)
+
+        return vmd_results
+
+
+
+class vmd_decomp_front_decomp(nn.Module):
+    def __init__(self,mode_num=2):
+        super(vmd_decomp_front_decomp, self).__init__()
+        self.mode_num = mode_num
+    def vmd_decompose_torch(self,signal, alpha=2000, tau=0, K=3, DC=0, init=1, tol=1e-7):
+        """
+        对单变量信号进行VMD分解（使用PyTorch张量）
+        :param signal: 输入的一维信号 (seqlen,)
+        :param alpha: 惩罚项强度，默认2000
+        :param tau: 噪声容忍度，默认0
+        :param K: 模态数量
+        :param DC: 是否保留DC分量，默认0
+        :param init: 初始化模式，1为随机，2为零
+        :param tol: 收敛阈值
+        :return: 分解后的模态张量 (K, seqlen)
+        """
+        # 将信号从 Torch 转换为 Numpy
+        signal_np = signal.detach().cpu().numpy()
+
+        # 使用 pyvmd 进行分解
+        u, _, _ = VMD(signal_np, alpha, tau, K, DC, init, tol)
+
+        # 将结果转换回 Torch
+        return torch.tensor(u, dtype=torch.float32)
+
+    def process_batch(self,batch_idx, router_down, mode_num, nvar):
+        batch_results = []  # 存储当前批次的变量分解结果
+        for var in range(nvar):
+            signal = router_down[batch_idx, :, var]  # 提取当前变量的时间序列
+            modes = self.vmd_decompose_torch(signal, K=mode_num)  # VMD分解，返回形状 (K, seqlen)
+            batch_results.append(modes)
+        # 将当前 batch 的变量结果堆叠 (K, seqlen, nvar)
+        return torch.stack(batch_results, dim=-1)  # 堆叠变量
+    def forward(self, x):
+        batchsize_x, seqlen_x, nvar_x = x.size()
+
+        # vmd_results = []
+        # for batch in range(b):
+        #     batch_results = []  # 存储当前批次的变量分解结果
+        #     for var in range(nvar):
+        #         signal = router_down[batch, :, var]  # 提取当前变量的时间序列
+        #         modes = self.vmd_decompose_torch(signal, K=self.mode_num)  # VMD分解，返回形状 (K, seqlen)
+        #         batch_results.append(modes)
+        #     # 将当前 batch 的变量结果堆叠 (K, seqlen, nvar)
+        #     batch_results = torch.stack(batch_results, dim=-1)  # 堆叠变量
+        #     vmd_results.append(batch_results)
+
+
+        vmd_results = Parallel(n_jobs=2)(delayed(self.process_batch)(batch_idx, x, self.mode_num, nvar_x)for batch_idx in range(batchsize_x))
+        # 将所有 batch 的结果堆叠，形状为 (batchsize, K, seqlen, nvar)
+        vmd_results = torch.stack(vmd_results, dim=0)
+
+        return vmd_results
