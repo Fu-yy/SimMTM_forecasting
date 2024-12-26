@@ -52,9 +52,10 @@ if [ ! -d "./run_log/log_test_win/PEMS08" ]; then
     mkdir ./run_log/log_test_win/PEMS08
 fi
 
-
+positive_nums=1
 #ETTh1
 
+echo "ETTh1 "
 
 python -u run.py \
     --task_name pretrain \
@@ -72,7 +73,10 @@ python -u run.py \
     --n_heads 16 \
     --d_model 32 \
     --d_ff 64 \
-    --positive_nums 2 \
+    --stride 2 \
+    --patch_len 2 \
+    --stride 2 \
+    --positive_nums $positive_nums \
     --mask_rate 0.5 \
     --learning_rate 0.001 \
     --batch_size 8 \
@@ -80,7 +84,8 @@ python -u run.py \
 > ./run_log/log_test_win/ETTh1/'SimMTM_pretrain'0.01.log 2>&1
 
 
-for pred_len in 96; do
+for pred_len in 96 192 336 720; do
+echo "ETTh1 $pred_len"
     python -u run.py \
         --task_name finetune \
         --is_training 1 \
@@ -100,14 +105,17 @@ for pred_len in 96; do
         --n_heads 16 \
         --d_model 32 \
         --d_ff 64 \
+        --patch_len 2 \
+        --stride 2 \
         --learning_rate 0.0001 \
         --dropout 0.2 \
         --batch_size 8 \
-> ./run_log/log_test_win/ETTh1/'SimMTM_finetune'$pred_len_0.01.log 2>&1
+> ./run_log/log_test_win/ETTh1/'SimMTM_finetune'$pred_len'_'0.01.log 2>&1
 
 done
 
 #ETTh2
+echo "ETTh2 "
 
 python -u run.py \
     --task_name pretrain \
@@ -125,8 +133,10 @@ python -u run.py \
     --c_out 7 \
     --n_heads 8 \
     --d_model 8 \
+    --stride 2 \
+    --patch_len 2 \
     --d_ff 32 \
-    --positive_nums 2 \
+    --positive_nums $positive_nums \
     --mask_rate 0.5 \
     --learning_rate 0.001 \
     --batch_size 8 \
@@ -134,7 +144,9 @@ python -u run.py \
 > ./run_log/log_test_win/ETTh2/'SimMTM_pretrain'0.01.log 2>&1
 
 
-for pred_len in 96; do
+for pred_len in 96 192 336 720; do
+echo "ETTh2 $pred_len"
+
     python -u run.py \
         --task_name finetune \
         --is_training 1 \
@@ -152,13 +164,15 @@ for pred_len in 96; do
         --enc_in 7 \
         --dec_in 7 \
         --c_out 7 \
+        --stride 2 \
+        --patch_len 2 \
         --n_heads 8 \
         --d_model 8 \
         --d_ff 32 \
         --dropout 0.4 \
         --head_dropout 0.2 \
         --batch_size 8 \
-> ./run_log/log_test_win/ETTh2/'SimMTM_finetune'$pred_len_0.01.log 2>&1
+> ./run_log/log_test_win/ETTh2/'SimMTM_finetune'$pred_len'_'0.01.log 2>&1
 
 done
 
@@ -168,106 +182,121 @@ done
 
 #
 #
-#python -u run.py \
-#    --task_name pretrain \
-#    --root_path ./dataset/ETT-small/ \
-#    --data_path ETTm1.csv \
-#    --model_id ETTm1 \
-#    --model SimMTM \
-#    --data ETTm1 \
-#    --features M \
-#    --seq_len 336 \
-#    --e_layers 2 \
-#    --enc_in 7 \
-#    --dec_in 7 \
-#    --c_out 7 \
-#    --n_heads 8 \
-#    --d_model 32 \
-#    --d_ff 64 \
-#    --positive_nums 2 \
-#    --mask_rate 0.5 \
-#    --learning_rate 0.001 \
-#    --batch_size 8 \
-#    --train_epochs 50 \
-#> 'TimeDART_my_SimMTM_ETTm1_pretrain'0.01.log 2>&1
-#
-#
-#
-#for pred_len in 96 192 336 720; do
-#    python -u run.py \
-#        --task_name finetune \
-#        --is_training 1 \
-#        --root_path ./dataset/ETT-small/ \
-#        --data_path ETTm1.csv \
-#        --model_id ETTm1 \
-#        --model SimMTM \
-#        --data ETTm1 \
-#        --features M \
-#        --seq_len 336 \
-#        --label_len 48 \
-#        --pred_len $pred_len \
-#        --e_layers 2 \
-#        --enc_in 7 \
-#        --dec_in 7 \
-#        --c_out 7 \
-#        --n_heads 8 \
-#        --d_model 32 \
-#        --d_ff 64 \
-#        --dropout 0 \
-#> 'TimeDART_my_SimMTM_ETTm1_finetune'$pred_len_0.01.log 2>&1
-#
-#done
-#
-#
-#python -u run.py \
-#    --task_name pretrain \
-#    --root_path ./dataset/ETT-small/ \
-#    --data_path ETTm2.csv \
-#    --model_id ETTm2 \
-#    --model SimMTM \
-#    --data ETTm2 \
-#    --features M \
-#    --seq_len 336 \
-#    --e_layers 3 \
-#    --enc_in 7 \
-#    --dec_in 7 \
-#    --c_out 7 \
-#    --n_heads 8 \
-#    --d_model 8 \
-#    --d_ff 16 \
-#    --positive_nums 2 \
-#    --mask_rate 0.5 \
-#    --learning_rate 0.001 \
-#    --batch_size 8 \
-#    --train_epochs 50 \
-#> 'TimeDART_my_SimMTM_ETTm2_pretrain'0.01.log 2>&1
-#
-#
-#
-#for pred_len in 96 ; do
-#    python -u run.py \
-#        --task_name finetune \
-#        --is_training 1 \
-#        --root_path ./dataset/ETT-small/ \
-#        --data_path ETTm2.csv \
-#        --model_id ETTm2 \
-#        --model SimMTM \
-#        --data ETTm2 \
-#        --features M \
-#        --seq_len 336 \
-#        --label_len 48 \
-#        --pred_len $pred_len \
-#        --e_layers 3 \
-#        --enc_in 7 \
-#        --dec_in 7 \
-#        --c_out 7 \
-#        --n_heads 8 \
-#        --d_model 8 \
-#        --d_ff 16 \
-#        --dropout 0 \
-#        --batch_size 64 \
-#> 'TimeDART_my_SimMTM_ETTm2_finetune'$pred_len_0.01.log 2>&1
-#
-#done
+echo "ETTm1 $pred_len"
+
+python -u run.py \
+    --task_name pretrain \
+    --root_path ./dataset/ETT-small/ \
+    --data_path ETTm1.csv \
+    --model_id ETTm1 \
+    --model SimMTM \
+    --data ETTm1 \
+    --features M \
+    --seq_len 336 \
+    --e_layers 2 \
+    --enc_in 7 \
+    --dec_in 7 \
+    --c_out 7 \
+    --n_heads 8 \
+    --d_model 32 \
+    --d_ff 64 \
+    --patch_len 2 \
+    --stride 2 \
+    --positive_nums $positive_nums \
+    --mask_rate 0.5 \
+    --learning_rate 0.001 \
+    --batch_size 8 \
+    --train_epochs 50 \
+> ./run_log/log_test_win/ETTm1/'SimMTM_pretrain'0.01.log 2>&1
+
+
+
+for pred_len in 96 192 336 720; do
+echo "ETTm1 $pred_len"
+
+    python -u run.py \
+        --task_name finetune \
+        --is_training 1 \
+        --root_path ./dataset/ETT-small/ \
+        --data_path ETTm1.csv \
+        --model_id ETTm1 \
+        --model SimMTM \
+        --data ETTm1 \
+        --features M \
+        --seq_len 336 \
+        --label_len 48 \
+        --pred_len $pred_len \
+        --e_layers 2 \
+        --enc_in 7 \
+        --dec_in 7 \
+        --c_out 7 \
+        --n_heads 8 \
+        --d_model 32 \
+        --d_ff 64 \
+        --patch_len 2 \
+        --stride 2 \
+        --dropout 0 \
+> ./run_log/log_test_win/ETTm1/'SimMTM_finetune'$pred_len'_'0.01.log 2>&1
+
+done
+
+echo "ETTm2 "
+
+python -u run.py \
+    --task_name pretrain \
+    --root_path ./dataset/ETT-small/ \
+    --data_path ETTm2.csv \
+    --model_id ETTm2 \
+    --model SimMTM \
+    --data ETTm2 \
+    --features M \
+    --seq_len 336 \
+    --e_layers 3 \
+    --enc_in 7 \
+    --dec_in 7 \
+    --c_out 7 \
+    --stride 2 \
+    --patch_len 2 \
+    --n_heads 8 \
+    --d_model 8 \
+    --d_ff 16 \
+    --positive_nums $positive_nums \
+    --mask_rate 0.5 \
+    --learning_rate 0.001 \
+    --batch_size 8 \
+    --train_epochs 50 \
+> ./run_log/log_test_win/ETTm2/'SimMTM_pretrain'0.01.log 2>&1
+
+
+
+for pred_len in 96 192 336 720 ; do
+echo "ETTm2 $pred_len"
+
+    python -u run.py \
+        --task_name finetune \
+        --is_training 1 \
+        --root_path ./dataset/ETT-small/ \
+        --data_path ETTm2.csv \
+        --model_id ETTm2 \
+        --model SimMTM \
+        --data ETTm2 \
+        --features M \
+        --seq_len 336 \
+        --label_len 48 \
+        --pred_len $pred_len \
+        --e_layers 3 \
+        --enc_in 7 \
+        --dec_in 7 \
+        --c_out 7 \
+        --n_heads 8 \
+        --stride 2 \
+        --patch_len 2 \
+        --d_model 8 \
+        --d_ff 16 \
+        --dropout 0 \
+        --batch_size 64 \
+> ./run_log/log_test_win/ETTm2/'SimMTM_finetune'$pred_len'_'0.01.log 2>&1
+
+done
 #
 #
